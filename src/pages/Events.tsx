@@ -76,9 +76,9 @@ const events: EventsData = {
             images: ['/ccpic.png'],
         },
         {
-            title: 'Being part of blood donation camp at VITS',
+            title: 'Being part of blood donation camp at Vignan Institute of Technology and Science',
             date: 'July 28, 2025',
-            description: " Being part of blood donation camp at VITS on the occasion of Chairman Dr. Lavu Rathaiah garu's birthday.",
+            description: " Being part of blood donation camp at Vignan Institute of Technology and Science on the occasion of Chairman Dr. Lavu Rathaiah garu's birthday.",
             images: ['/bd3.jpeg', '/bd2.jpeg'],
         },
         {

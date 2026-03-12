@@ -88,7 +88,7 @@ function App() {
     // Always cancel previous speech to avoid queueing
     window.speechSynthesis.cancel()
     
-    // Safety resume
+    // Safety resume - essential for Chrome bug
     window.speechSynthesis.resume()
     
     const cleanText = text.replace(/###/g, '').replace(/\*/g, '').replace(/\[|\]/g, '').replace(/\n/g, ' ')
@@ -152,9 +152,9 @@ function App() {
   // Initial greeting based on language
   useEffect(() => {
     const greetings = {
-      en: "Hello! I'm your voice-enabled virtual admission counselor. How can I help you today?",
-      te: "నమస్కారం! నేను మీ విర్చువల్ అడ్మిషన్ కౌన్సెలర్‌ను. మీకు ఎలా సహాయపడగలను?",
-      hi: "नमस्ते! मैं आपका वर्चुअल एडमिशन काउंसलर हूँ। मैं आपकी कैसे मदद कर सकता हूँ?"
+      en: "Hello! I'm your Vignan Institute of Technology and Science Admission Agent. How can I help you today?",
+      te: "నమస్కారం! నేను విజ్ఞాన్ ఇన్స్టిట్యూట్ ఆఫ్ టెక్నాలజీ అండ్ సైన్స్ అడ్మిషన్ ఏజెంట్‌ను. మీకు ఎలా సహాయపడగలను?",
+      hi: "नमस्ते! मैं विज्ञान इंस्टीट्यूट ऑफ टेक्नोलॉजी एंड साइंस एडमिशन एजेंट हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
     }
     
     const text = greetings[language]
@@ -333,7 +333,7 @@ function App() {
 
     const systemPrompt = {
       role: 'system' as const,
-      content: `You are a virtual admission counselor for VITS College. 
+      content: `You are a virtual admission counselor for Vignan Institute of Technology and Science College. 
       STRICT LANGUAGE RULE: You MUST speak ONLY in ${langNames[language]}. 
       - Current Language Setting: ${language.toUpperCase()} (${langNames[language]})
       - If the setting is TE, reply ONLY in Telugu script.
@@ -411,14 +411,15 @@ function App() {
           whileTap={{ scale: 0.9 }}
           onClick={() => {
             setIsChatOpen(true);
+            const greeting = language === 'te' 
+              ? "నమస్కారం! నేను విజ్ఞాన్ ఇన్స్టిట్యూట్ ఆఫ్ టెక్నాలజీ అండ్ సైన్స్ అడ్మిషన్ ఏజెంట్‌ను. మీకు ఎలా సహాయపడగలను?" 
+              : language === 'hi' 
+              ? "नमस्ते! मैं विज्ञान इंस्टीट्यूट ऑफ टेक्नोलॉजी एंड साइंस एडमिशन एजेंट हूँ। मैं आपकी कैसे मदद कर सकता हूँ?" 
+              : "Hello! I'm your Vignan Institute of Technology and Science Admission Agent. How can I help you today?";
+            
+            speak(greeting);
             if (messages.length === 0) {
-              const greeting = language === 'te' 
-                ? "నమస్కారం! నేను విస్ కాలేజీ అడ్మిషన్ అసిస్టెంట్‌ను. మీకు ఎలా సహాయపడగలను?" 
-                : language === 'hi' 
-                ? "नमस्ते! मैं विट्स कॉलेज एडमिशन असिस्टेंट हूँ। मैं आपकी कैसे मदद कर सकता हूँ?" 
-                : "Hello! I'm your VITS Admission Agent. How can I help you today?";
               setMessages([{ id: '1', role: 'bot', content: greeting, timestamp: new Date() }]);
-              speak(greeting);
             }
           }}
           className="floating-bubble glass"
@@ -449,7 +450,7 @@ function App() {
                   <div className="online-indicator"></div>
                 </div>
                 <div>
-                  <h4>VITS Admission Agent</h4>
+                  <h4>Vignan Institute of Technology and Science Admission Agent</h4>
                   <p>{langNames[language]} • Online</p>
                 </div>
               </div>
@@ -510,7 +511,7 @@ function App() {
               </button>
             </div>
             <div className="widget-footer">
-              AI Support for VITS Admissions
+              AI Support for Vignan Institute of Technology and Science Admissions
             </div>
           </motion.div>
         )}

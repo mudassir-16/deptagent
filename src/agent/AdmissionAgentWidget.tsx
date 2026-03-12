@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Bot, Send, Mic, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { mockBranches, mockPlacements, mockInfra } from './mockData';
-import { getGroqResponse } from '@/lib/groq';
+import { mockBranches, mockPlacements, mockInfra, departmentInfo, facultyList, clubs, mouPartners, departmentHighlights } from './mockData';
+import { getGroqResponse, groq } from '@/lib/groq';
 import { Message, Branch, Language } from './types';
 import './AgentWidget.css';
 
@@ -18,6 +18,13 @@ declare global {
   }
 }
 
+// ── Greetings ──────────────────────────────────────────────────────────────
+const GREETINGS: Record<Language, string> = {
+  en: "Hello! I'm the AI Counselor for the IT Department - Vignan Institute of Technology and Science. How can I assist you today?",
+  te: "నమస్కారం! నేను IT డిపార్ట్‌మెంట్ - విజ్ఞాన్ ఇన్స్టిట్యూట్ ఆఫ్ టెక్నాలజీ అండ్ సైన్స్ కౌన్సెలర్‌ను. మీకు ఎలా సహాయపడగలను?",
+  hi: "नमस्ते! मैं IT विभाग - विग्नान इंस्टीट्यूट ऑफ टेक्नोलॉजी एंड साइंस का काउंसलर हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
+};
+
 // ─── Component ──────────────────────────────────────────────────────────────
 export default function AdmissionAgentWidget() {
   const [language, setLanguage] = useState<Language>('en');
@@ -32,6 +39,11 @@ export default function AdmissionAgentWidget() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const lastSpokenGreetingRef = useRef<string>('');
+  const handleSendMessageRef = useRef<any>(null);
+  const lastBotMsgRef = useRef<string>('');
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const langNames: Record<Language, string> = {
     en: 'English',
@@ -39,77 +51,158 @@ export default function AdmissionAgentWidget() {
     hi: 'हिन्दी (Hindi)',
   };
 
-  // Auto-clear error after 5 s
+  // ── Auto-clear error ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!errorMsg) return;
     const t = setTimeout(() => setErrorMsg(null), 5000);
     return () => clearTimeout(t);
   }, [errorMsg]);
 
-  // ── TTS ────────────────────────────────────────────────────────────────────
+  // ── Load voices into ref (voiceschanged fires async in Chrome) ──────────────
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const load = () => {
+      const v = synth.getVoices();
+      if (v.length > 0) {
+        voicesRef.current = v;
+        console.log('[TTS] voices loaded:', v.length, '|', v[0]?.name);
+      }
+    };
+    load(); // works immediately in Firefox/Safari
+    synth.addEventListener('voiceschanged', load);
+    
+    // Unlock Speech API on first user interaction (Chrome requirement)
+    const unlock = () => {
+      const u = new SpeechSynthesisUtterance('');
+      u.volume = 0;
+      window.speechSynthesis.speak(u);
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('touchstart', unlock);
+      console.log('[TTS] Audio context unlocked');
+    };
+    window.addEventListener('click', unlock);
+    window.addEventListener('touchstart', unlock);
+    
+    return () => {
+      synth.removeEventListener('voiceschanged', load);
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('touchstart', unlock);
+    };
+  }, []);
+
+
+  // ── TTS: Robust chunked implementation for Chrome ──────────
+  const currentChunksRef = useRef<string[]>([]);
+  const currentOnEndRef = useRef<(() => void) | undefined>();
+
   const speak = useCallback(
     (text: string, onEnd?: () => void) => {
-      if (!text || !isVoiceEnabled || !window.speechSynthesis) {
-        onEnd?.();
-        return;
-      }
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume();
+      const synth = window.speechSynthesis;
+      if (!synth || !text) { onEnd?.(); return; }
 
-      const cleanText = text
-        .replace(/###/g, '')
-        .replace(/\*/g, '')
-        .replace(/\[|\]/g, '')
-        .replace(/\n/g, ' ');
+      // Reset state
+      if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
+      synth.cancel();
+      currentChunksRef.current = [];
+      currentOnEndRef.current = onEnd;
 
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      const langCodes: Record<Language, string> = { en: 'en-IN', te: 'te-IN', hi: 'hi-IN' };
-      const currentLangCode = langCodes[language];
-      utterance.lang = currentLangCode;
+      const clean = text.replace(/[#*[\]]/g, '').replace(/\n/g, ' ').trim();
+      if (!clean) { onEnd?.(); return; }
 
-      const voices = window.speechSynthesis.getVoices();
-      let voice = voices.find(v => v.lang.startsWith(currentLangCode) && !v.name.includes('Online'));
-      if (!voice) voice = voices.find(v => v.lang.startsWith(currentLangCode));
-      if (voice) utterance.voice = voice;
+      // CRITICAL FIX: Chrome fails silently on long text. We must chunk by sentences.
+      const chunks = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+      currentChunksRef.current = chunks.map(c => c.trim()).filter(Boolean);
 
-      utterance.rate = language === 'en' ? 1.0 : 0.85;
-      utterance.pitch = 1.0;
-      utterance.onend = () => onEnd?.();
-      utterance.onerror = e => {
-        if ((e as any).error !== 'interrupted') {
-          const fallback = new SpeechSynthesisUtterance(cleanText);
-          fallback.lang = currentLangCode;
-          if (onEnd) fallback.onend = () => onEnd();
-          window.speechSynthesis.speak(fallback);
-        } else {
-          onEnd?.();
+      let voices = voicesRef.current;
+      if (voices.length === 0) voices = synth.getVoices();
+
+      const pickVoice = () => {
+        if (voices.length === 0) return undefined;
+        return voices.find(v => v.lang === 'en-US' && v.localService) ||
+               voices.find(v => v.lang.startsWith('en-')) ||
+               voices[0];
+      };
+      const voice = pickVoice();
+
+      const speakNextChunk = () => {
+        if (currentChunksRef.current.length === 0) {
+          console.log('[TTS] ✓ all chunks done');
+          if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
+          currentOnEndRef.current?.();
+          return;
         }
+
+        const chunk = currentChunksRef.current.shift()!;
+        const utt = new SpeechSynthesisUtterance(chunk);
+        
+        if (voice) { utt.voice = voice; utt.lang = voice.lang; }
+        utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
+
+        utt.onstart = () => {
+          console.log('[TTS] ▶ playing chunk:', chunk.substring(0, 20) + '...');
+          // Keep sending resume to wake Chrome up
+          if (!keepAliveRef.current) {
+            keepAliveRef.current = setInterval(() => { synth.resume(); }, 5000);
+          }
+        };
+
+        utt.onend = () => {
+          speakNextChunk(); // Chain the next chunk immediately
+        };
+
+        utt.onerror = (e: any) => {
+          console.warn('[TTS] ✗ error on chunk:', e.error);
+          if (e.error === 'interrupted') return; // Cancelled
+          speakNextChunk(); // Skip bad chunk and continue
+        };
+
+        // Wake Chrome up immediately before speaking
+        synth.resume();
+        synth.speak(utt);
       };
 
-      window.speechSynthesis.speak(utterance);
+      // Firefox/Safari work fine synchronously. Chrome usually needs a tiny delay after cancel.
+      if (synth.speaking || synth.pending) {
+        setTimeout(speakNextChunk, 100);
+      } else {
+        speakNextChunk();
+      }
     },
-    [isVoiceEnabled, language],
+    [],
   );
 
-  // ── Greeting when language changes ─────────────────────────────────────────
+  // ── Greeting on open / language change ────────────────────────────────────
   useEffect(() => {
-    const greetings: Record<Language, string> = {
-      en: "Hello! I'm your VITS Admission Agent. How can I help you today?",
-      te: "నమస్కారం! నేను విస్ కాలేజీ అడ్మిషన్ అసిస్టెంట్‌ను. మీకు ఎలా సహాయపడగలను?",
-      hi: "नमस्ते! मैं विट्स कॉलेज एडमिशन असिस्टेंट हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
-    };
-    const text = greetings[language];
-    setMessages([{ id: '1', role: 'bot', content: text, timestamp: new Date() }]);
-    if (messages.length > 1) speak(text);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [language]);
+    const text = GREETINGS[language];
 
-  // Scroll to bottom
+    setMessages(prev => {
+      const newGreeting: Message = { id: '1', role: 'bot', content: text, timestamp: new Date() };
+      if (prev.length === 0) return [newGreeting];
+      if (prev[0].id === '1') return [newGreeting, ...prev.slice(1)];
+      return [newGreeting, ...prev];
+    });
+
+    if (!isChatOpen) {
+      lastSpokenGreetingRef.current = '';
+      return;
+    }
+
+    if (lastSpokenGreetingRef.current === text) return;
+
+    const timer = setTimeout(() => {
+      lastSpokenGreetingRef.current = text;
+      speak(text);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [language, isChatOpen, speak]);
+
+  // ── Scroll to bottom ────────────────────────────────────────────────────────
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ── Speech Recognition ─────────────────────────────────────────────────────
+  // ── Speech Recognition (STT) ────────────────────────────────────────────────
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
@@ -121,15 +214,12 @@ export default function AdmissionAgentWidget() {
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
       const t = e.results[0][0].transcript;
+      console.log('Voice recognized:', t);
       setInputValue(t);
-      handleSendMessage(t);
+      if (handleSendMessageRef.current) handleSendMessageRef.current(t);
     };
     rec.onerror = (e: any) => {
-      setErrorMsg(
-        e.error === 'not-allowed'
-          ? 'Microphone access denied.'
-          : `Voice error: ${e.error}`,
-      );
+      setErrorMsg(e.error === 'not-allowed' ? 'Microphone access denied.' : `Voice error: ${e.error}`);
       setIsListening(false);
     };
     rec.onend = () => setIsListening(false);
@@ -137,7 +227,7 @@ export default function AdmissionAgentWidget() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language]);
 
-  // ── Toggle mic ─────────────────────────────────────────────────────────────
+  // ── Toggle mic ──────────────────────────────────────────────────────────────
   const toggleListening = () => {
     if (!recognitionRef.current) {
       setErrorMsg('Voice input not supported. Please use Chrome or Edge.');
@@ -160,7 +250,7 @@ export default function AdmissionAgentWidget() {
   };
 
   // ── Send message ────────────────────────────────────────────────────────────
-  const handleSendMessage = async (textOverride?: string) => {
+  const handleSendMessage = useCallback(async (textOverride?: string) => {
     const text = (textOverride ?? inputValue).trim();
     if (!text || isLoading) return;
 
@@ -169,52 +259,6 @@ export default function AdmissionAgentWidget() {
     setInputValue('');
     setIsLoading(true);
 
-    // Rank prediction shortcut
-    const rankMatch = text.match(/\b\d{1,7}\b/);
-    const hasRankKw =
-      /rank|ర్యాంక్|रैंक|my rank is/i.test(text);
-
-    if (rankMatch && hasRankKw) {
-      const rank = parseInt(rankMatch[0]);
-      const possible = mockBranches
-        .filter(b => rank <= b.cutoff_rank)
-        .sort((a, b) => a.cutoff_rank - b.cutoff_rank);
-
-      setPredictedBranches(possible);
-
-      let resp = '';
-      if (language === 'te') {
-        resp = possible.length === mockBranches.length
-          ? `మీ ర్యాంక్ ${rank} చాలా మంచిది! మీరు అన్ని బ్రాంచ్‌లలో సీటు పొందే అవకాశం ఉంది.`
-          : possible.length > 0
-          ? `మీ ర్యాంక్ ${rank} ప్రకారం ${possible.length} బ్రాంచ్‌లు: ${possible.map(b => b.name).join(', ')}.`
-          : `క్షమించండి, ర్యాంక్ ${rank} తో సీటు రావడం కష్టం. మేనేజ్‌మెంట్ కోటా గురించి అడగండి.`;
-      } else if (language === 'hi') {
-        resp = possible.length === mockBranches.length
-          ? `आपकी रैंक ${rank} बहुत अच्छी है! सभी शाखाओं में सीट मिलने की संभावना है।`
-          : possible.length > 0
-          ? `रैंक ${rank} के आधार पर ${possible.length} शाखाएं: ${possible.map(b => b.name).join(', ')}।`
-          : `क्षमा करें, रैंक ${rank} से सीट मिलना मुश्किल है। मैनेजमेंट कोटा के लिए संपर्क करें।`;
-      } else {
-        resp = possible.length === mockBranches.length
-          ? `Your rank ${rank} is excellent! You qualify for all branches. Select one below for details.`
-          : possible.length > 0
-          ? `Based on rank ${rank}, you may get into: ${possible.map(b => b.name).join(', ')}.`
-          : `With rank ${rank}, a seat may be difficult. Please enquire about the Management Quota.`;
-      }
-
-      setTimeout(() => {
-        setMessages(prev => [
-          ...prev,
-          { id: (Date.now() + 1).toString(), role: 'bot', content: resp, timestamp: new Date() },
-        ]);
-        setIsLoading(false);
-        speak(resp);
-      }, 500);
-      return;
-    }
-
-    // AI (Groq) response
     const history = messages.slice(-5).map(m => ({
       role: (m.role === 'bot' ? 'assistant' : 'user') as 'assistant' | 'user',
       content: m.content,
@@ -223,25 +267,63 @@ export default function AdmissionAgentWidget() {
 
     const systemPrompt = {
       role: 'system' as const,
-      content: `You are a virtual admission counselor for VITS College.
+      content: `You are the official AI Counselor for the DEPARTMENT OF INFORMATION TECHNOLOGY at Vignan Institute of Technology and Science (VITS), Hyderabad.
+
+STRICT TOPIC RULE: You ONLY answer questions about the IT Department of VITS. If a user asks about any other department (CSE, ECE, Civil, Mechanical, EEE etc.), any general college info, EAMCET ranks, cutoffs, or anything unrelated to IT Department — politely say: "I can only help with questions about the IT Department. Please contact the college office for other queries."
+
 STRICT LANGUAGE RULE: Reply ONLY in ${langNames[language]}.
-COLLEGE DATA:
-- Placements: Highest ${mockPlacements[0].highest_package}, Avg ${mockPlacements[0].average_package}.
-- Infrastructure: ${mockInfra.map(i => i.category + ': ' + i.details).join(' ')}.
-- Branches: ${mockBranches.map(b => b.name).join(', ')}.
-Response style: Conversational, helpful, brief (suitable for read-aloud).`,
+Keep responses brief and conversational (suitable for voice read-aloud).
+
+=== ABOUT THE IT DEPARTMENT ===
+- Full name: Department of Information Technology, Vignan Institute of Technology and Science
+- Established: ${departmentInfo.established} | Intake: ${departmentInfo.intake} students per year
+- Location: ${departmentInfo.address}
+- Contact: Phone ${departmentInfo.phone} | Email: ${departmentInfo.email}
+- Office: ${departmentInfo.officeRoom} | Timings: ${departmentInfo.officeHours}
+
+=== IT DEPARTMENT PLACEMENTS ===
+Year-wise placement data:
+- 2022-23: 47 out of 50 students placed | 77 offers | Highest: 11 LPA | Recruiters: Informatica, Eunimart, ADP, GlobalLogic
+- 2023-24: 37 out of 49 students placed | 54 offers | Highest: 6 LPA | Recruiters: TCS, Infosys, Cognizant
+- 2024-25: 20 out of 46 students placed | 31 offers | Highest: 10 LPA | Recruiters: Rinex, GlobalLogic, Infosys, Cognizant
+- 2025-26 (ongoing): 9 placed so far | Highest: 13.83 LPA | Recruiters: InsightSoftware, Ndmatrix, Infosys
+Best placement year: 2022-23 with 94% placement rate
+
+=== IT DEPARTMENT FACULTY (${facultyList.length} members) ===
+${facultyList.map(f => `- ${f.name} | ${f.position} | ${f.qualification} | ${f.experience} experience | Specialization: ${f.specialization}`).join('\n')}
+
+=== IT DEPARTMENT STUDENT CLUBS ===
+${clubs.map(c => `- ${c.name} (Est. ${c.established}): ${c.focus} | ${c.members} members | Meets: ${c.schedule}`).join('\n')}
+- NG-DSDC Cell: Student-led software development cell. Built the department website, alumni portal (VAAIT), and blood bank system (Pranadhara).
+
+=== IT DEPARTMENT MoUs WITH INDUSTRY ===
+${mouPartners.map(m => `${m.organization} (${m.year})`).join(', ')}
+
+=== RESEARCH & ACHIEVEMENTS ===
+- Faculty have 100+ publications in Scopus/SCI journals
+- Key research areas: Machine Learning, AI, Data Science, Cloud Computing, Cyber Security, Blockchain, Big Data
+- Students have won hackathons and secured internships at DRDO, InsightSoftware (50K/month), Swecha-IIIT Hyderabad, and more
+
+For anything not covered here, direct the user to call ${departmentInfo.phone} or email ${departmentInfo.email}.`,
     };
 
     const aiResp = await getGroqResponse([systemPrompt, ...history], language);
+    lastBotMsgRef.current = aiResp;
     setMessages(prev => [
       ...prev,
       { id: (Date.now() + 1).toString(), role: 'bot', content: aiResp, timestamp: new Date() },
     ]);
     setIsLoading(false);
     speak(aiResp, () => {
-      if (isVoiceEnabled && isChatOpen) setTimeout(toggleListening, 500);
+      if (isVoiceEnabled && isChatOpen) {
+        setTimeout(() => { if (isChatOpen) toggleListening(); }, 500);
+      }
     });
-  };
+  }, [isLoading, language, messages, langNames, isChatOpen, isVoiceEnabled, speak]);
+
+  useEffect(() => {
+    handleSendMessageRef.current = handleSendMessage;
+  }, [handleSendMessage]);
 
   // ── Branch detail card ──────────────────────────────────────────────────────
   const handleBranchSelect = (branch: Branch) => {
@@ -281,17 +363,12 @@ Response style: Conversational, helpful, brief (suitable for read-aloud).`,
           whileTap={{ scale: 0.9 }}
           className="agent-floating-bubble"
           onClick={() => {
+            const greeting = GREETINGS[language];
+            lastSpokenGreetingRef.current = greeting;
+            lastBotMsgRef.current = greeting;
             setIsChatOpen(true);
-            if (messages.length === 0) {
-              const greeting =
-                language === 'te'
-                  ? 'నమస్కారం! నేను విస్ కాలేజీ అడ్మిషన్ అసిస్టెంట్‌ను.'
-                  : language === 'hi'
-                  ? 'नमस्ते! मैं विट्स कॉलेज एडमिशन असिस्टेंट हूँ।'
-                  : "Hello! I'm your VITS Admission Agent. How can I help you?";
-              setMessages([{ id: '1', role: 'bot', content: greeting, timestamp: new Date() }]);
-              speak(greeting);
-            }
+            // Speak directly in onClick — preserves Chrome user-gesture activation
+            speak(greeting);
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -300,7 +377,7 @@ Response style: Conversational, helpful, brief (suitable for read-aloud).`,
           <div className="agent-bubble-badge">
             <Sparkles size={11} />
           </div>
-          <span className="agent-bubble-tooltip">Admission Agent</span>
+          <span className="agent-bubble-tooltip">IT Dept Counselor</span>
         </motion.button>
       )}
 
@@ -319,14 +396,24 @@ Response style: Conversational, helpful, brief (suitable for read-aloud).`,
               <div className="agent-header-info">
                 <div className="agent-avatar-wrap">
                   <Bot size={20} />
-                  <div className="agent-online-dot" />
+                  <div className={`agent-online-dot ${!groq ? 'offline' : ''}`} />
                 </div>
                 <div>
-                  <h4>VITS Admission Agent</h4>
-                  <p>{langNames[language]} • Online</p>
+                  <h4>IT Department – Vignan Institute of Technology and Science</h4>
+                  <p>{langNames[language]} • {groq ? 'Online' : 'Offline Mode'}</p>
                 </div>
               </div>
               <div className="agent-header-actions">
+                {/* 🔊 Replay button — direct user gesture, guaranteed to speak */}
+                <button
+                  className="agent-close-btn"
+                  title="Replay last message"
+                  style={{ fontSize: '16px' }}
+                  onClick={() => {
+                    const msg = lastBotMsgRef.current || GREETINGS[language];
+                    speak(msg);
+                  }}
+                >🔊</button>
                 <select
                   className="agent-lang-select"
                   value={language}
@@ -397,10 +484,8 @@ Response style: Conversational, helpful, brief (suitable for read-aloud).`,
                 onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
                 placeholder={
                   isListening
-                    ? language === 'te'
-                      ? 'వింటున్నాను...'
-                      : 'Listening...'
-                    : 'Ask me anything...'
+                    ? language === 'te' ? 'వింటున్నాను...' : language === 'hi' ? 'सुन रहा हूँ...' : 'Listening...'
+                    : language === 'te' ? 'మీ ప్రశ్న అడగండి...' : language === 'hi' ? 'कुछ भी पूछें...' : 'Ask about IT Department, faculty, placements...'
                 }
               />
               <button
@@ -413,7 +498,7 @@ Response style: Conversational, helpful, brief (suitable for read-aloud).`,
               </button>
             </div>
 
-            <div className="agent-widget-footer">AI Support · VITS Admissions</div>
+            <div className="agent-widget-footer">AI Counselor · IT Department – Vignan Institute of Technology and Science</div>
           </motion.div>
         )}
       </AnimatePresence>

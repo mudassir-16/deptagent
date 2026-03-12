@@ -1,5 +1,5 @@
 /* =========================================
-   VITS Admission Agent Widget Styles
+   Vignan Institute of Technology and Science Admission Counselor Widget Styles
    ========================================= */
 
 .agent-widget-wrapper {
@@ -112,6 +112,10 @@
   background: #10b981;
   border-radius: 50%;
   border: 2px solid #0f172a;
+}
+
+.agent-online-dot.offline {
+  background: #94a3b8;
 }
 
 .agent-header-info h4 {

@@ -14,7 +14,7 @@ import Research from "./pages/Research";
 import Placements from "./pages/Placements";
 import MOUs from './pages/MOUs';
 import Newsletters from './pages/Newsletters';
-import EventsPage from "@/pages/Events.tsx";
+import EventsPage from "@/pages/Events";
 import AdmissionAgentWidget from "./agent/AdmissionAgentWidget";
 
 const queryClient = new QueryClient();
@@ -24,7 +24,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <Router>
+      <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <div className="transform-gpu will-change-auto">
           <Routes>
             <Route path="/" element={<Index />} />
@@ -41,7 +41,7 @@ const App = () => (
             <Route path="*" element={<NotFound />} />
           </Routes>
         </div>
-        {/* ── AI Admission Agent – floats on every page ── */}
+        {/* ── AI Admission Counselor – floats on every page ── */}
         <AdmissionAgentWidget />
       </Router>
     </TooltipProvider>

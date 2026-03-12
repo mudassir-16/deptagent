@@ -5,7 +5,7 @@ export interface Branch {
   coordinator_name: string;
   coordinator_email: string;
   coordinator_phone: string;
-  cutoff_rank: number;
+  cutoff_rank?: number;
 }
 
 export interface PlacementData {
@@ -15,6 +15,10 @@ export interface PlacementData {
   average_package: string;
   top_companies: string[];
   placement_percentage: number;
+  students_eligible?: number;
+  students_placed?: number;
+  offers?: number;
+  note?: string;
 }
 
 export interface Infrastructure {
