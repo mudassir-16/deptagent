@@ -34,4 +34,4 @@ export interface Message {
   timestamp: Date;
 }
 
-export type Language = 'en' | 'te' | 'hi';
+export type Language = 'en' | 'te';

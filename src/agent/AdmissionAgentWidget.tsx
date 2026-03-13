@@ -6,6 +6,8 @@ import { getGroqResponse, groq } from '@/lib/groq';
 import { Message, Branch, Language } from './types';
 import './AgentWidget.css';
 
+import { createPortal } from 'react-dom';
+
 // ─── Speech Recognition type stubs ─────────────────────────────────────────
 interface SpeechRecognitionEvent extends Event {
   results: { [index: number]: { [index: number]: { transcript: string } } };
@@ -22,7 +24,6 @@ declare global {
 const GREETINGS: Record<Language, string> = {
   en: "Hello! I'm the AI Counselor for the IT Department - Vignan Institute of Technology and Science. How can I assist you today?",
   te: "నమస్కారం! నేను IT డిపార్ట్‌మెంట్ - విజ్ఞాన్ ఇన్స్టిట్యూట్ ఆఫ్ టెక్నాలజీ అండ్ సైన్స్ కౌన్సెలర్‌ను. మీకు ఎలా సహాయపడగలను?",
-  hi: "नमस्ते! मैं IT विभाग - विग्नान इंस्टीट्यूट ऑफ टेक्नोलॉजी एंड साइंस का काउंसलर हूँ। मैं आपकी कैसे मदद कर सकता हूँ?",
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -48,7 +49,6 @@ export default function AdmissionAgentWidget() {
   const langNames: Record<Language, string> = {
     en: 'English',
     te: 'తెలుగు (Telugu)',
-    hi: 'हिन्दी (Hindi)',
   };
 
   // ── Auto-clear error ────────────────────────────────────────────────────────
@@ -95,7 +95,6 @@ export default function AdmissionAgentWidget() {
   // ── TTS: Robust chunked implementation for Chrome ──────────
   const currentChunksRef = useRef<string[]>([]);
   const currentOnEndRef = useRef<(() => void) | undefined>();
-
   const speak = useCallback(
     (text: string, onEnd?: () => void) => {
       const synth = window.speechSynthesis;
@@ -110,20 +109,49 @@ export default function AdmissionAgentWidget() {
       const clean = text.replace(/[#*[\]]/g, '').replace(/\n/g, ' ').trim();
       if (!clean) { onEnd?.(); return; }
 
-      // CRITICAL FIX: Chrome fails silently on long text. We must chunk by sentences.
-      const chunks = clean.match(/[^.!?]+[.!?]+/g) || [clean];
-      currentChunksRef.current = chunks.map(c => c.trim()).filter(Boolean);
+      // CRITICAL FIX: Chrome/Edge fail silently or crash on long text or pure-punctuation. 
+      // Match standard punctuation and Commas (,)
+      // This regex ensures each chunk starts with a letter/word, followed by optional punctuation.
+      const chunks = clean.match(/[^.!?,\n]+[.!?,\n]*/g) || [clean];
+      
+      // Extra safety: Filter out any chunks that don't contain at least one valid word character
+      currentChunksRef.current = chunks
+        .map(c => c.trim())
+        .filter(c => c.length > 0 && /[^\s.!?,\n]/.test(c));
 
       let voices = voicesRef.current;
       if (voices.length === 0) voices = synth.getVoices();
 
       const pickVoice = () => {
-        if (voices.length === 0) return undefined;
-        return voices.find(v => v.lang === 'en-US' && v.localService) ||
-               voices.find(v => v.lang.startsWith('en-')) ||
-               voices[0];
+        const targetLang = language === 'te' ? 'te-IN' : 'en-US';
+        if (voices.length === 0) return { voice: undefined, targetLang };
+
+        const langPrefix = targetLang.split('-')[0].toLowerCase();
+
+        let voice;
+        if (language === 'te') {
+          // Robust Telugu search
+          voice = voices.find(v => v.lang.toLowerCase().startsWith('te') && v.name.includes('Google')) ||
+                  voices.find(v => v.lang.toLowerCase().startsWith('te') && v.localService) ||
+                  voices.find(v => v.lang.toLowerCase().startsWith('te')) ||
+                  voices.find(v => v.name.toLowerCase().includes('telugu') || v.name.toLowerCase().includes('తెలుగు'));
+        } else {
+          // English search
+          voice = voices.find(v => v.lang.toLowerCase() === 'en-us' && v.localService) ||
+                  voices.find(v => v.lang.toLowerCase().startsWith('en-'));
+        }
+
+        console.log(`[TTS] Selected voice for ${language}:`, voice ? voice.name : 'System Default Fallback');
+
+        // Fallback: If we don't have a specific voice, and it's English, pick the first one.
+        // If it's NOT English, we return undefined so the browser's native engine tries to auto-detect and speak it.
+        if (!voice && language === 'en') {
+          voice = voices[0];
+        }
+
+        return { voice: voice || undefined, targetLang };
       };
-      const voice = pickVoice();
+      const voiceSelection = pickVoice();
 
       const speakNextChunk = () => {
         if (currentChunksRef.current.length === 0) {
@@ -136,7 +164,10 @@ export default function AdmissionAgentWidget() {
         const chunk = currentChunksRef.current.shift()!;
         const utt = new SpeechSynthesisUtterance(chunk);
         
-        if (voice) { utt.voice = voice; utt.lang = voice.lang; }
+        if (voiceSelection.voice) { utt.voice = voiceSelection.voice; }
+        // EXPLICITLY set the lang to force the browser engine to interpret foreign scripts correctly
+        utt.lang = voiceSelection.targetLang;
+        
         utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
 
         utt.onstart = () => {
@@ -169,7 +200,7 @@ export default function AdmissionAgentWidget() {
         speakNextChunk();
       }
     },
-    [],
+    [language],
   );
 
   // ── Greeting on open / language change ────────────────────────────────────
@@ -210,7 +241,7 @@ export default function AdmissionAgentWidget() {
     const rec = new SR();
     rec.continuous = false;
     rec.interimResults = false;
-    rec.lang = { en: 'en-IN', te: 'te-IN', hi: 'hi-IN' }[language];
+    rec.lang = { en: 'en-IN', te: 'te-IN' }[language];
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
       const t = e.results[0][0].transcript;
@@ -333,9 +364,6 @@ For anything not covered here, direct the user to call ${departmentInfo.phone} o
     if (language === 'te') {
       content = `### ${branch.name}\n${branch.description}\n\n**కోఆర్డినేటర్:** ${branch.coordinator_name}\n**ఈమెయిల్:** ${branch.coordinator_email}\n**ఫోన్:** ${branch.coordinator_phone}`;
       speech = `${branch.name} కోఆర్డినేటర్ ${branch.coordinator_name}.`;
-    } else if (language === 'hi') {
-      content = `### ${branch.name}\n${branch.description}\n\n**समन्वयक:** ${branch.coordinator_name}\n**ईमेल:** ${branch.coordinator_email}\n**फोन:** ${branch.coordinator_phone}`;
-      speech = `${branch.name} के समन्वयक ${branch.coordinator_name} हैं।`;
     } else {
       content = `### ${branch.name}\n${branch.description}\n\n**Coordinator:** ${branch.coordinator_name}\n**Email:** ${branch.coordinator_email}\n**Phone:** ${branch.coordinator_phone}`;
       speech = `The ${branch.name} coordinator is ${branch.coordinator_name}.`;
@@ -352,7 +380,7 @@ For anything not covered here, direct the user to call ${departmentInfo.phone} o
   };
 
   // ── Render ──────────────────────────────────────────────────────────────────
-  return (
+  const widgetContent = (
     <div className="agent-widget-wrapper">
       {/* Floating Bubble */}
       {!isChatOpen && (
@@ -421,7 +449,6 @@ For anything not covered here, direct the user to call ${departmentInfo.phone} o
                 >
                   <option value="en">English</option>
                   <option value="te">తెలుగు</option>
-                  <option value="hi">हिन्दी</option>
                 </select>
                 <button className="agent-close-btn" onClick={() => setIsChatOpen(false)}>
                   &times;
@@ -484,8 +511,8 @@ For anything not covered here, direct the user to call ${departmentInfo.phone} o
                 onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
                 placeholder={
                   isListening
-                    ? language === 'te' ? 'వింటున్నాను...' : language === 'hi' ? 'सुन रहा हूँ...' : 'Listening...'
-                    : language === 'te' ? 'మీ ప్రశ్న అడగండి...' : language === 'hi' ? 'कुछ भी पूछें...' : 'Ask about IT Department, faculty, placements...'
+                    ? language === 'te' ? 'వింటున్నాను...' : 'Listening...'
+                    : language === 'te' ? 'మీ ప్రశ్న అడగండి...' : 'Ask about IT Department, faculty, placements...'
                 }
               />
               <button
@@ -504,4 +531,6 @@ For anything not covered here, direct the user to call ${departmentInfo.phone} o
       </AnimatePresence>
     </div>
   );
+
+  return createPortal(widgetContent, document.body);
 }

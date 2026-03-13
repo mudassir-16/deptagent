@@ -7,7 +7,6 @@ import './index.css'
 const rootElement = document.getElementById("root")!;
 const root = createRoot(rootElement);
 
-// Add a class to the root element to optimize rendering
-rootElement.classList.add('transform-gpu', 'will-change-auto');
+// Removed transform-gpu from #root as it breaks position: fixed for descendant elements
 
 root.render(<App />);
